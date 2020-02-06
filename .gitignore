@@ -128,5 +128,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Exercise Data *.mat
+# Exercise Data *.mat and load_exercise_data.m
 *.mat
+load_exercise_data.m
