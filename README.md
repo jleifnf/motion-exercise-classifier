@@ -1,2 +1,2 @@
 # motion-exercise-classifier
-Using 
+Using wearable motion data to recognize exercise.
