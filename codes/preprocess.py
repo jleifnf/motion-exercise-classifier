@@ -1,0 +1,150 @@
+from scipy.io import loadmat, matlab
+from scipy.signal import spectrogram
+import pandas as pd
+import numpy as np
+from joblib import Parallel, delayed
+
+# Spectrogram Parameters for 'spec_gram'
+spec_params = dict(fs=50, window='hamming',
+                   nperseg=256, nfft=500,
+                   noverlap=256 - 50,  # half a second time difference
+                   detrend='constant',
+                   scaling='spectrum',
+                   )
+
+pad_size = ((spec_params['nperseg'] - spec_params['noverlap'],), (0,))
+
+
+def load_mat(filename):
+    """
+    This function should be called instead of direct scipy.io.loadmat
+    as it cures the problem of not properly recovering python dictionaries
+    from mat files. It calls the function check keys to cure all entries
+    which are still mat-objects
+    """
+
+    def _check_vars(d):
+        """
+        Checks if entries in dictionary are mat-objects. If yes
+        todict is called to change them to nested dictionaries
+        """
+        for key in d:
+            if isinstance(d[key], matlab.mio5_params.mat_struct):
+                d[key] = _todict(d[key])
+            elif isinstance(d[key], np.ndarray):
+                d[key] = np.array(Parallel(n_jobs=-2)(delayed(_toarray)(i) for i in d[key]))
+        return d
+
+    def _todict(matobj):
+        """
+        A recursive function which constructs from matobjects nested dictionaries
+        """
+        d = {}
+        for strg in matobj._fieldnames:
+            elem = matobj.__dict__[strg]
+            if isinstance(elem, matlab.mio5_params.mat_struct):
+                d[strg] = _todict(elem)
+            elif isinstance(elem, np.ndarray):
+                d[strg] = _toarray(elem)
+            else:
+                d[strg] = elem
+        return d
+
+    def _toarray(ndarray):
+        """
+        A recursive function which constructs ndarray from cellarrays
+        (which are loaded as numpy ndarrays), recursing into the elements
+        if they contain matobjects.
+        """
+        elem_list = []
+        for sub_elem in ndarray:
+            if isinstance(sub_elem, matlab.mio5_params.mat_struct):
+                elem_list.append(_todict(sub_elem))
+            elif isinstance(sub_elem, np.ndarray):
+                elem_list.append(_toarray(sub_elem))
+            else:
+                elem_list.append(sub_elem)
+        return np.array(elem_list)
+
+    data = loadmat(filename, struct_as_record=False, squeeze_me=True)
+    return _check_vars(data)
+
+
+def spec_gram(subj, spec_params=spec_params, pad_size=pad_size, ):
+    spec3d = []
+    pad_sig = pd.DataFrame(np.pad(subj, pad_size, 'symmetric'), columns=['time', 'x', 'y', 'z'])
+    for d in ['x', 'y', 'z']:
+        f, t, Sxx = spectrogram(pad_sig[d], **spec_params)
+        spec3d.append(Sxx)
+    return f, t, spec3d
+
+
+def log_freqs(nfft=None, fmin=1e-1, fs=50, bpo=10):
+    """
+    %   Calculate a log-frequency spectrogram
+    %   S is spectrogram to log-transform;
+    %   nfft is parent FFT window; fs is the source samplerate.
+    %    Optional FMIN is the lowest frequency to display (1mHz);
+    %    BPO is the number of bins per octave (10).
+    %    MX returns the nlogbin x nfftbin mapping matrix;
+    %    sqrt(MX'*(Y.^2)) is an approximation to the original FFT
+    %    spectrogram that Y is based on, suitably blurred by going
+    %    through the log-F domain.
+    """
+
+    # Ratio between adjacent frequencies in log-f axis
+    fratio = 2 ** (1 / bpo)
+    # How many bins in log-f axis
+    nbins = int(np.log2((fs / 2) / fmin) // np.log2(fratio)) + 1
+
+    # nfft is parent FFT window
+    if nfft is None:
+        nfft = 500
+    # Freqs corresponding to each bin in FFT
+    fftfrqs = np.arange(0, nfft / 2 + 1).reshape(1, -1) * (fs / nfft)
+    nfftbins = int(nfft / 2 + 1)
+
+    # Freqs corresponding to each bin in log F output
+    logffrqs = fmin * np.exp(np.log(2) * np.arange(0, nbins).reshape(1, -1) / bpo)
+
+    # Bandwidths of each bin in log F
+    logfbws = logffrqs * (fratio - 1)
+    # .. but bandwidth cannot be less than FFT binwidth
+    logfbws = np.maximum(logfbws, fs / nfft)
+
+    # Controls how much overlap there is between adjacent bands
+    ovfctr = 0.54  # Adjusted by hand to make sum(mx'*mx) close to 1.0
+
+    # Weighting matrix mapping energy in FFT bins to logF bins
+    # is a set of Gaussian profiles depending on the difference in
+    # frequencies, scaled by the bandwidth of that bin
+    freqdiff = ((np.tile(logffrqs.T, (1, nfftbins)) - np.tile(fftfrqs, (nbins, 1)))
+                / np.tile(ovfctr * logfbws.T, (1, nfftbins)))
+    mx = np.exp(-0.5 * freqdiff ** 2)
+    # Normalize rows by sqrt(E), so multiplying by mx' gets approx orig spec back
+    mx = mx / np.tile(np.sqrt(2 * (mx ** 2).sum(1).reshape(-1, 1)), (1, nfftbins))
+    return logffrqs, mx
+
+
+def log_specgram(S, mx=None):
+    if mx is None:
+        logffrqs, mx = log_freqs()
+    # Perform mapping in magnitude-squared (energy) domain
+    return np.sqrt(mx @ (np.abs(S) ** 2))
+
+
+def yield_signal(data, win=250, stride=50):
+    """
+
+    Args:
+        data (numpy.ndarray): signal data
+        win: window of the signal to look at
+        stride: step-size of samples to skip for the next window
+
+    Returns:
+        A generator yielding windowed signal.
+    """
+    steps = (data.shape[0] - win) // stride
+    for s in range(steps + 1):
+        signal = data[s * stride:s * stride + win]
+        yield signal
