@@ -1,8 +1,23 @@
+import os
 from scipy.io import loadmat, matlab
-from scipy.signal import spectrogram
+from scipy.signal import spectrogram, find_peaks, medfilt
 import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
+
+# load in the 75 different exercises available in the full data
+exercises = pd.read_csv('codes/exercises.txt', header=None, names=['exercise'])  # assumes the cwd is highest level
+# project
+# folder
+
+# 5 samples of exercise to classify
+targets_idx = {
+    'Crunch': 10,
+    'Jumping Jacks': 23,
+    'Running (treadmill)': 42,
+    'Squat': 50,
+    'Walk': 70
+    }
 
 # Spectrogram Parameters for 'spec_gram'
 spec_params = dict(fs=50, window='hamming',
@@ -32,7 +47,7 @@ def load_mat(filename):
             if isinstance(d[key], matlab.mio5_params.mat_struct):
                 d[key] = _todict(d[key])
             elif isinstance(d[key], np.ndarray):
-                d[key] = np.array(Parallel(n_jobs=-2)(delayed(_toarray)(i) for i in d[key]))
+                d[key] = _toarray(d[key])
         return d
 
     def _todict(matobj):
@@ -56,15 +71,18 @@ def load_mat(filename):
         (which are loaded as numpy ndarrays), recursing into the elements
         if they contain matobjects.
         """
-        elem_list = []
-        for sub_elem in ndarray:
-            if isinstance(sub_elem, matlab.mio5_params.mat_struct):
-                elem_list.append(_todict(sub_elem))
-            elif isinstance(sub_elem, np.ndarray):
-                elem_list.append(_toarray(sub_elem))
-            else:
-                elem_list.append(sub_elem)
-        return np.array(elem_list)
+        if ndarray.dtype != 'float64':
+            elem_list = []
+            for sub_elem in ndarray:
+                if isinstance(sub_elem, matlab.mio5_params.mat_struct):
+                    elem_list.append(_todict(sub_elem))
+                elif isinstance(sub_elem, np.ndarray):
+                    elem_list.append(_toarray(sub_elem))
+                else:
+                    elem_list.append(sub_elem)
+            return np.array(elem_list)
+        else:
+            return ndarray
 
     data = loadmat(filename, struct_as_record=False, squeeze_me=True)
     return _check_vars(data)
@@ -133,18 +151,44 @@ def log_specgram(S, mx=None):
     return np.sqrt(mx @ (np.abs(S) ** 2))
 
 
-def yield_signal(data, win=250, stride=50):
+def signal_feats(s):
+    peaks, p_dict = find_peaks(medfilt(s, 5), prominence=0.1, width=5)
+
+    avg_peak_dist = np.diff(peaks).mean()
+
+    print('avg peak dist: ', round(avg_peak_dist, 2),
+          '\tavg prom: ', round(p_dict['prominences'].mean(), 2),
+          '\tavg width: ', round(p_dict['width_heights'].mean(), 2))
+
+    return peaks, p_dict
+
+
+def segment_signal(data, targets=None, win=250, stride=50):
     """
 
     Args:
-        data (numpy.ndarray): signal data
-        win: window of the signal to look at
-        stride: step-size of samples to skip for the next window
+
+        data (dict):    signal data in dict of a recording of exercise from a subject with keys structure of
+                            {'data':{accelDataMatrix':[...], 'gyroDataMatrix':[...]}}
+        targets (dict): exercises with their index in the 'exercises.txt' and in 'singleonly.mat' file
+        win:              window of the signal to look at (default: 250 samples = 5 seconds)
+        stride:           step-size of samples to skip for the next window (default: 50 samples = 1 seconds)
+        *** Assumes the sampling raate of the motion data is 50 Hz.
 
     Returns:
         A generator yielding windowed signal.
     """
-    steps = (data.shape[0] - win) // stride
-    for s in range(steps + 1):
-        signal = data[s * stride:s * stride + win]
-        yield signal
+    # Data sanity check: only process the data for both accel & gyro that at least has the same samples as the window
+    # size
+
+    signal = np.hstack((data['data']['accelDataMatrix'][:, 1:], data['data']['gyroDataMatrix'][:, 1:]))
+    if signal.shape[0] > win:
+        if targets is None:
+            targets = targets_idx
+        ex = np.array(
+            [1 if k == data['activityName'] else 0 for k in targets])  # convert the exercise name to interger to
+        # pass into CNN model
+        steps = (signal.shape[0] - win) // stride if signal.shape[0] > 300 else 1
+        segments = np.vstack([[signal[s * stride:s * stride + win], ex] for s in range(steps)])
+        if isinstance(segments, np.ndarray):
+            return segments
