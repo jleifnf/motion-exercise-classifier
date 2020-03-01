@@ -5,10 +5,12 @@ import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 
+# remove these exercises from class due to no data samples
+ignore_exercises = ['<Initial Activity>', 'Arm straight up', 'Invalid', 'Non-Exercise',
+                    'Note', 'Tap IMU Device', 'Tap Right Device']
 # load in the 75 different exercises available in the full data
 exercises = pd.read_csv('codes/exercises.txt', header=None, names=['exercise'])  # assumes the cwd is highest level
-# project
-# folder
+exercises = exercises.where(~exercises.exercise.isin(ignore_exercises)).dropna()
 
 # 5 samples of exercise to classify
 targets_idx = {
@@ -165,6 +167,7 @@ def signal_feats(s):
 
 def segment_signal(data, targets=None, win=250, stride=50):
     """
+    Segment signal of an exercise recording into chunks of designated window size.
 
     Args:
 
@@ -178,15 +181,17 @@ def segment_signal(data, targets=None, win=250, stride=50):
     Returns:
         A generator yielding windowed signal.
     """
-    # Data sanity check: only process the data for both accel & gyro that at least has the same samples as the window
-    # size
+    if data['activityName'] not in targets:  # only segment signal if there the activity is in the targets
+        return
 
     signal = np.hstack((data['data']['accelDataMatrix'][:, 1:], data['data']['gyroDataMatrix'][:, 1:]))
+    # Data sanity check: only process the data for both accel & gyro that at least has the same samples as the window
+    # size
     if signal.shape[0] > win:
         if targets is None:
             targets = targets_idx
         ex = np.array(
-            [1 if k == data['activityName'] else 0 for k in targets])  # convert the exercise name to interger to
+                [1 if k == data['activityName'] else 0 for k in targets])  # convert the exercise name to interger to
         # pass into CNN model
         steps = (signal.shape[0] - win) // stride if signal.shape[0] > 300 else 1
         segments = np.vstack([[signal[s * stride:s * stride + win], ex] for s in range(steps)])
