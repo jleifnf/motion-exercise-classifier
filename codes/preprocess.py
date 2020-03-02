@@ -5,14 +5,15 @@ import pandas as pd
 import numpy as np
 from joblib import Parallel, delayed
 
-# remove these exercises from class due to no data samples
+# remove these exercises from targets since there are no data samples
 ignore_exercises = ['<Initial Activity>', 'Arm straight up', 'Invalid', 'Non-Exercise',
                     'Note', 'Tap IMU Device', 'Tap Right Device']
+
 # load in the 75 different exercises available in the full data
 exercises = pd.read_csv('codes/exercises.txt', header=None, names=['exercise'])  # assumes the cwd is highest level
 exercises = exercises.where(~exercises.exercise.isin(ignore_exercises)).dropna()
 
-# 5 samples of exercise to classify
+# 5 samples of exercise to classify for the simple model
 targets_idx = {
     'Crunch': 10,
     'Jumping Jacks': 23,
@@ -90,7 +91,17 @@ def load_mat(filename):
     return _check_vars(data)
 
 
-def spec_gram(subj, spec_params=spec_params, pad_size=pad_size, ):
+def spec_gram(subj, spec_params=spec_params, pad_size=pad_size):
+    """
+
+    Args:
+        subj (numpy.ndarray):  nd
+        spec_params:
+        pad_size:
+
+    Returns:
+
+    """
     spec3d = []
     pad_sig = pd.DataFrame(np.pad(subj, pad_size, 'symmetric'), columns=['time', 'x', 'y', 'z'])
     for d in ['x', 'y', 'z']:
@@ -101,7 +112,7 @@ def spec_gram(subj, spec_params=spec_params, pad_size=pad_size, ):
 
 def log_freqs(nfft=None, fmin=1e-1, fs=50, bpo=10):
     """
-    %   Calculate a log-frequency spectrogram
+    Calculate a log-frequency spectrogram
     %   S is spectrogram to log-transform;
     %   nfft is parent FFT window; fs is the source samplerate.
     %    Optional FMIN is the lowest frequency to display (1mHz);
